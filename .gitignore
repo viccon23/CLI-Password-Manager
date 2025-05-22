@@ -1,0 +1,11 @@
+# Ignore the passwords data file
+passwords_data.json
+master_config.json
+
+# Python virtual environment
+venv/
+*.pyc
+__pycache__/
+
+# textfile
+notes.txt
