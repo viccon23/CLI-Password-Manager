@@ -8,6 +8,7 @@ import os
 import getpass # For securely getting master password
 import json    # For storing data as JSON (example)
 import sys     # To check command-line arguments
+import shlex   # For safely splitting command input
 
 
 # Configuration
@@ -22,7 +23,6 @@ VERIFIER_TEXT = b"cli_master_password_is_set_and_verified" # A known text for ve
 # A higher number means more time to derive the key, making it harder for attackers
 PBKDF2_ITERATIONS = 480000
 
-# Helper function to derive an encryption key from a master password and a salt
 def derive_key(master_password: str, salt: bytes) -> bytes:
     """Derives a Fernet-compatible key from a master password and salt."""
     """Takes master password and a salt, then uses PBKDF2HMAC (a key derivation function) to create an encryption key.
@@ -47,7 +47,7 @@ def setup_master_password():
     print("1. Choose a STRONG and UNIQUE master password.")
     print("2. DO NOT FORGET IT. If you lose this password, you will lose access to ALL your stored passwords permanently.")
     print("   There is NO recovery mechanism.\n")
-    print(" -- pvlco 2025\n")
+    print(" -- pocho © 2025\n")
 
     while True:
         mp1 = getpass.getpass("Enter new master password: ")
@@ -88,7 +88,6 @@ def setup_master_password():
         # Consider removing MASTER_CONFIG_FILE if partially written and failed
         if os.path.exists(MASTER_CONFIG_FILE):
             os.remove(MASTER_CONFIG_FILE)
-
 
 def get_verified_master_password() -> str | None:
     """
@@ -138,150 +137,232 @@ def get_verified_master_password() -> str | None:
             print("Incorrect master password (verification mismatch).")
             return None
     except Exception: # Catches Fernet's InvalidToken if key is wrong or data is tampered
-        print("Incorrect master password.")
         return None
 
-def main():
-    # --- Initial Setup Check ---
-    if not os.path.exists(MASTER_CONFIG_FILE):
-        if len(sys.argv) > 1: # User tried to run a command before setup
-            print(f"Master password not set up. Please run 'python {os.path.basename(sys.argv[0])}' first to set it up.")
-            return
-        else: # No command, just 'python cli_manager.py' -> run setup
-            setup_master_password()
-            return # Exit after setup
+# --- Command Handler Functions ---
+def clear_console():
+    # Clear console based on the operating system
+    if os.name == 'nt':  # For Windows
+        os.system('cls')
+    else:  # For Unix/Linux/Mac
+        os.system('clear')
 
-    # --- Setup is done, proceed with command parsing ---
-    parser = argparse.ArgumentParser(
-        description="Password Manager CLI. Manages encrypted password entries.",
-        epilog=f"Example: python {os.path.basename(sys.argv[0])} add my_service my_username my_password123"
-    )
-    # Subparsers are required if setup is complete
-    subparsers = parser.add_subparsers(dest="command", help="Available commands", required=True)
-
-    # Add command
-    parser_add = subparsers.add_parser("add", help="Add new entry (service, username, password)")
-    parser_add.add_argument("service", help="Name of the service (e.g., gmail.com)")
-    parser_add.add_argument("username", help="Username for the service")
-    parser_add.add_argument("password", help="Password for the service")
-
-    # Get command
-    parser_get = subparsers.add_parser("get", help="Get and decrypt password for a service")
-    parser_get.add_argument("service", help="Name of the service to retrieve")
-
-    # Delete command
-    parser_delete = subparsers.add_parser("delete", help="Delete an entry for a service")
-    parser_delete.add_argument("service", help="Name of the service to delete")
-
-    # List command
-    subparsers.add_parser("list", help="List all service entries (usernames only)")
-
-    # Search command
-    parser_search = subparsers.add_parser("search", help="Search for entries by service name")
-    parser_search.add_argument("service_query", help="Part of the service name to search for")
-
-    # Update command
-    parser_update = subparsers.add_parser("update", help="Update an existing entry")
-    parser_update.add_argument("service", help="Name of the service to update")
-    parser_update.add_argument("--username", help="New username for the service (optional)")
-    parser_update.add_argument("--password", help="New password for the service (optional, will be re-encrypted)")
-
-    # Generate command
-    parser_generate = subparsers.add_parser("generate", help="Generate a strong random password")
-    parser_generate.add_argument("--length", type=int, default=16, help="Length of the password (default: 16)")
-    parser_generate.add_argument("--no-symbols", action="store_true", help="Exclude symbols")
-    parser_generate.add_argument("--no-numbers", action="store_true", help="Exclude numbers")
-    parser_generate.add_argument("--no-lowercase", action="store_true", help="Exclude lowercase letters")
-    parser_generate.add_argument("--no-uppercase", action="store_true", help="Exclude uppercase letters")
-
-
-    # If no command is given (e.g., 'python cli_manager.py' after setup), argparse with required=True handles it.
-    # However, if sys.argv has only 1 element, it means no command was passed.
-    if len(sys.argv) == 1: # Should have been caught by setup check if MASTER_CONFIG_FILE didn't exist
-                           # If it exists, and still len(sys.argv) == 1, print help.
-        parser.print_help()
+def handle_add_command(args_list: list, master_password: str):
+    if len(args_list) != 3:
+        print("Usage: add <service> <username> <password>")
         return
 
-    args = parser.parse_args()
+    service, username, password_to_add = args_list[0], args_list[1], args_list[2]
 
-    # --- Command Execution ---
-    if args.command == "add":
-        # Verify the master password before adding an entry
-        master_password = get_verified_master_password()
-        if not master_password:
-            return # Verification failed or was cancelled by user
+    entry_salt = os.urandom(16)
+    encryption_key_for_entry = derive_key(master_password, entry_salt)
+    fernet = Fernet(encryption_key_for_entry)
+    encrypted_password_bytes = fernet.encrypt(password_to_add.encode())
 
-        # Generate a new, unique salt for this password entry
-        entry_salt = os.urandom(16)
+    new_entry = {
+        "service": service,
+        "username": username,
+        "password_encrypted": encrypted_password_bytes.decode(),
+        "salt": base64.urlsafe_b64encode(entry_salt).decode()
+    }
+    entries = []
+    try:
+        if os.path.exists(PASSWORDS_DATA_FILE) and os.path.getsize(PASSWORDS_DATA_FILE) > 0:
+            with open(PASSWORDS_DATA_FILE, "r") as f:
+                entries = json.load(f)
         
-        # Derive the encryption key using the VERIFIED master password and the new entry's salt
-        encryption_key_for_entry = derive_key(master_password, entry_salt)
-        fernet = Fernet(encryption_key_for_entry)
+        if any(entry['service'].lower() == service.lower() for entry in entries):
+            print(f"Error: An entry for service '{service}' already exists. Use 'update' command.")
+            return
 
-        # Encrypt the actual password for the service
-        encrypted_password_bytes = fernet.encrypt(args.password.encode())
+        entries.append(new_entry)
+        with open(PASSWORDS_DATA_FILE, "w") as f:
+            json.dump(entries, f, indent=4)
+        print(f"Entry for '{service}' added successfully.")
+    except Exception as e:
+        print(f"Error adding entry: {e}")
 
-        new_entry = {
-            "service": args.service,
-            "username": args.username,
-            "password_encrypted": encrypted_password_bytes.decode(),
-            "salt": base64.urlsafe_b64encode(entry_salt).decode()
-        }
+def handle_get_command(args_list: list, master_password: str):
+    if len(args_list) != 1:
+        print("Usage: get <service>")
+        return
+    service_to_get = args_list[0]
+    try:
+        if not os.path.exists(PASSWORDS_DATA_FILE) or os.path.getsize(PASSWORDS_DATA_FILE) == 0:
+            print("Password data file is empty or not found.")
+            return
+        with open(PASSWORDS_DATA_FILE, "r") as f:
+            entries = json.load(f)
+        entry = next((e for e in entries if e['service'].lower() == service_to_get.lower()), None)
 
-        entries = []
-        try:
-            if os.path.exists(PASSWORDS_DATA_FILE) and os.path.getsize(PASSWORDS_DATA_FILE) > 0:
-                with open(PASSWORDS_DATA_FILE, "r") as f:
-                    entries = json.load(f)
-            
-            if any(entry['service'].lower() == args.service.lower() for entry in entries):
-                print(f"Error: An entry for service '{args.service}' already exists. Use 'update' command if you want to change it.")
-                return
+        if entry:
+            entry_salt = base64.urlsafe_b64decode(entry['salt'])
+            encrypted_password_bytes = entry['password_encrypted'].encode('utf-8')
+            encryption_key_for_entry = derive_key(master_password, entry_salt)
+            fernet = Fernet(encryption_key_for_entry)
+            decrypted_password = fernet.decrypt(encrypted_password_bytes).decode()
+            print(f"\nService: {entry['service']}\nUsername: {entry['username']}\nPassword: {decrypted_password}")
+        else:
+            print(f"No entry found for service '{service_to_get}'.")
+    except Exception as e:
+        print(f"Error getting entry: {e}")
 
-            entries.append(new_entry)
+def handle_list_command(args_list: list, master_password: str):
+    # master_password might not be strictly needed here if we only show service/username
+    # but it's passed for consistency and if future enhancements require it.
+    if args_list: # list command takes no arguments
+        print("Usage: list")
+        return
+    try:
+        if not os.path.exists(PASSWORDS_DATA_FILE) or os.path.getsize(PASSWORDS_DATA_FILE) == 0:
+            print("No entries to list.")
+            return
+        with open(PASSWORDS_DATA_FILE, "r") as f:
+            entries = json.load(f)
+        if not entries:
+            print("No entries found.")
+            return
+        print("\n--- Stored Entries ---")
+        for i, entry in enumerate(entries):
+            service_name = entry.get('service', 'N/A')
+            username = entry.get('username', 'N/A')
+            print(f"{i+1}. Service: {service_name}, Username: {username}")
+        print("--- End of List ---")
+    except Exception as e:
+        print(f"Error listing entries: {e}")
+
+def handle_delete_command(args_list: list, master_password: str):
+    if len(args_list) != 1:
+        print("Usage: delete <service>")
+        return
+    service_to_delete = args_list[0]
+    try:
+        if not os.path.exists(PASSWORDS_DATA_FILE) or os.path.getsize(PASSWORDS_DATA_FILE) == 0:
+            print("Password data file is empty or not found.")
+            return
+        with open(PASSWORDS_DATA_FILE, "r") as f:
+            entries = json.load(f)
+        
+        original_length = len(entries)
+        entries = [e for e in entries if e['service'].lower() != service_to_delete.lower()]
+
+        if len(entries) < original_length:
             with open(PASSWORDS_DATA_FILE, "w") as f:
                 json.dump(entries, f, indent=4)
-            
-            print(f"Entry for '{args.service}' added successfully and encrypted.")
+            print(f"Entry for '{service_to_delete}' deleted successfully.")
+        else:
+            print(f"No entry found for service '{service_to_delete}'.")
+    except Exception as e:
+        print(f"Error deleting entry: {e}")
 
-        except json.JSONDecodeError:
-            print(f"Error: Could not decode JSON from {PASSWORDS_DATA_FILE}. The file might be corrupted.")
-        except IOError as e:
-            print(f"Error saving entry to {PASSWORDS_DATA_FILE}: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred while adding the entry: {e}")
-        
-    elif args.command == "get":
-        master_password = get_verified_master_password()
-        if not master_password:
-            return
-        print(f"Getting entry for service: {args.service} (implementation pending)...")
-        # TODO: Implement get logic (load entries, find service, use master_password and entry's salt to decrypt)
-    elif args.command == "delete":
-        master_password = get_verified_master_password() # May not be needed if just deleting, but good for consistency or if confirmation is added
-        if not master_password:
-            return
-        print(f"Deleting entry for service: {args.service} (implementation pending)...")
-        # TODO: Implement delete logic
-    elif args.command == "list":
-        # Listing service names and usernames might not require master password,
-        # but if you want to be strict, you can ask for it to "unlock" the manager.
-        # For now, let's assume it doesn't for listing non-sensitive parts.
-        print("Listing all entries (implementation pending)...")
-        # TODO: Implement list logic (load entries, print service/username)
-    elif args.command == "search":
-        print(f"Searching for service: {args.service_query} (implementation pending)...")
-        # TODO: Implement search logic
-    elif args.command == "update":
-        master_password = get_verified_master_password()
-        if not master_password:
-            return
-        print(f"Updating entry for service: {args.service} (implementation pending)...")
-        # TODO: Implement update logic (similar to add, but find existing, re-encrypt if password changes)
-    elif args.command == "generate":
-        print(f"Generating password (implementation pending)...")
-        # TODO: Implement password generation logic
-    # No need for 'elif args.command is None:' because subparsers are required.
+def handle_help_command():
+    print("\nAvailable commands:")
+    print("  add <service> <username> <password> - Add a new password entry.")
+    print("  get <service>                       - Retrieve a password for a service.")
+    print("  list                                - List all service entries (names and usernames).")
+    print("  delete <service>                    - Delete a password entry for a service.")
+    # print("  update <service> [--username NEW_USER] [--password NEW_PASS] - Update an entry.") # TODO
+    # print("  generate [--length L] [--complexity C] - Generate a password.") # TODO
+    print("  help                                - Show this help message.")
+    print("  exit                                - Exit the password manager.")
+    print("")
+
+# --- Main Application Logic ---
+def main():
+    # Initial setup check - this happens before the interactive loop
+    if not os.path.exists(MASTER_CONFIG_FILE):
+        # If any command-line arguments are passed during first run,
+        # it might be confusing. For simplicity, just run setup.
+        print("First time setup...")
+        setup_master_password()
+        # setup_master_password now exits on failure, or prints success.
+        # If setup was successful, we can proceed to ask for login or just tell them to restart.
+        print("Setup complete. Please restart the application to log in.")
+        return
+
+    # If setup is done, try to get the verified master password to "unlock"
+    verified_master_password = get_verified_master_password()
+    if not verified_master_password:
+        print("Master password verification failed. Exiting.")
+        return # Exit if master password verification fails
+    
+    clear_console()  # Clear console for better readability
+    print("\nPassword Manager Unlocked. Type 'help' for commands.")
+    print("\n --- pocho © 2025 ---\n")
+
+    # Main interactive loop
+    while True:
+        try:
+            raw_input = input("pm> ").strip()
+            if not raw_input:
+                continue
+
+            clear_console()  # Clear console for better readability
+
+            # Use shlex to handle quoted arguments safely
+            try:
+                parts = shlex.split(raw_input)
+            except ValueError as e:
+                print(f"Error parsing command: {e}. Ensure quotes are matched if used.")
+                continue
+                
+            command = parts[0].lower() if parts else ""
+            args_list = parts[1:]
+
+            if command == "add":
+                handle_add_command(args_list, verified_master_password)
+            elif command == "get":
+                handle_get_command(args_list, verified_master_password)
+            elif command == "list":
+                handle_list_command(args_list, verified_master_password)
+            elif command == "delete":
+                handle_delete_command(args_list, verified_master_password)
+            # TODO: Add handlers for update, generate
+            elif command == "help":
+                handle_help_command()
+            elif command == "exit":
+                print("Exiting Password Manager. Goodbye!")
+                break
+            else:
+                print(f"Unknown command: '{command}'. Type 'help' for available commands.")
+        except KeyboardInterrupt:
+            print("\nExiting Password Manager (Ctrl+C). Goodbye!")
+            break
+        except EOFError: # Ctrl+D
+            print("\nExiting Password Manager (EOF). Goodbye!")
+            break
+        except Exception as e_loop:
+            print(f"An unexpected error occurred in the main loop: {e_loop}")
+            # Optionally, decide if you want to break the loop on all errors or try to continue
+            # For now, let's continue, but log it.
+            # Consider adding logging for such errors.
 
 if __name__ == "__main__":
+    # Remove argparse for command line parsing if primary mode is interactive
+    # The initial check for MASTER_CONFIG_FILE in main() handles the first run.
     main()
+
+
+
+# def main():
+#     # --- Initial Setup Check ---
+#     if not os.path.exists(MASTER_CONFIG_FILE):
+#         if len(sys.argv) > 1: # User tried to run a command before setup
+#             print(f"Master password not set up. Please run 'python {os.path.basename(sys.argv[0])}' first to set it up.")
+#             return
+#         else: # No command, just 'python cli_manager.py' -> run setup
+#             setup_master_password()
+#             return # Exit after setup
+
+
+
+#     # elif args.command == "update":
+#     #     master_password = get_verified_master_password()
+#     #     if not master_password:
+#     #         return
+#     #     print(f"Updating entry for service: {args.service} (implementation pending)...")
+#     #     # TODO: Implement update logic (similar to add, but find existing, re-encrypt if password changes)
+#     # elif args.command == "generate":
+#     #     print(f"Generating password (implementation pending)...")
+#     #     # TODO: Implement password generation logic
+#     # # No need for 'elif args.command is None:' because subparsers are required.
