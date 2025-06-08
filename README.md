@@ -2,8 +2,6 @@
 
 A simple command-line interface (CLI) password manager built with Python. This tool allows you to securely store and manage your passwords locally, encrypted with a master password.
 
-pocho ©2025
-
 ## Features
 
 *   **Secure Storage:** Passwords are encrypted using Fernet symmetric encryption.
@@ -82,21 +80,8 @@ pocho ©2025
     Arguments with spaces should be enclosed in quotes, e.g.:
     `add "My Web Service" myusername "my complex password"`
 
-## Building an Executable (Optional)
-
-You can create a standalone executable using tools like PyInstaller.
-
-1.  **Install PyInstaller:**
-    ```bash
-    pip install pyinstaller
-    ```
-2.  **Build the Executable:**
-    Navigate to the script's directory and run:
-    ```bash
-    pyinstaller --onefile cli_manager.py
-    ```
-    The executable will be created in a `dist` subfolder (e.g., `dist/cli_manager.exe` on Windows).
-
 ## Disclaimer
 
-This project is primarily for educational purposes to demonstrate CLI application structure and basic cryptographic principles in Python. While it implements security best practices like strong key derivation and salting, always be cautious when managing sensitive data. Use at your own risk. For highly sensitive information, consider using well-vetted, professionally developed password managers.
+This project is primarily for educational purposes to demonstrate CLI application structure and basic cryptographic principles in Python. While it implements security best practices like strong key derivation and salting, always be cautious when managing sensitive data. Use at your own risk. 
+Seriously, this was just a personal project, and I'm not a professional cryptographer.
+For highly sensitive information, consider using well-vetted, professionally developed password managers.
